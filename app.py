@@ -4,8 +4,9 @@ import uuid
 import numpy as np
 import pandas as pd
 import streamlit as st
+import matplotlib.pyplot as plt
 
-# Intentar importar librerías avanzadas
+# Verificación e importación de librerías avanzadas
 try:
     import openpyxl
     EXCEL_AVAILABLE = True
@@ -14,30 +15,18 @@ except ImportError:
 
 try:
     from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
+    from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib import colors
     PDF_AVAILABLE = True
 except ImportError:
     PDF_AVAILABLE = False
 
-# Configuración inicial del panel
+# Configuración de la página
 st.set_page_config(page_title="Sistema Ejecutivo de Control de Obra", layout="wide", page_icon="🏗️")
 
-st.markdown("""
-    <style>
-    .metric-card {
-        background-color: #f8f9fa;
-        border: 1px solid #e9ecef;
-        border-radius: 8px;
-        padding: 15px;
-        text-align: center;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
 st.title("🏗️ Sistema Ejecutivo de Control y Reportes de Obra")
-st.caption("Consolidación multi-archivo, análisis gráfico interactivo y exportación ejecutiva en PDF.")
+st.caption("Consolidación multi-archivo, análisis gráfico dinámico y exportación en PDF.")
 
 # -----------------------------------------------------------------------------
 # MODOS DE TRABAJO
@@ -51,23 +40,24 @@ modo_trabajo = st.radio(
 lista_dfs = []
 
 if modo_trabajo == "📄 Archivo Único":
-    origen = st.radio("Fuente de los datos:", ["📁 Cargar Archivo (CSV / Excel)", "📷 Captura con Cámara (Dispositivo Móvil)"], horizontal=True)
+    origen = st.radio("Fuente de los datos:", ["📁 Cargar Archivo (CSV / Excel)", "📷 Captura con Cámara"], horizontal=True)
     if origen == "📁 Cargar Archivo (CSV / Excel)":
         archivo = st.file_uploader("Selecciona el archivo de obra", type=["csv", "xlsx", "xls"])
         if archivo:
             try:
                 df = pd.read_csv(archivo) if archivo.name.endswith('.csv') else pd.read_excel(archivo)
+                df['Archivo_Origen'] = archivo.name
                 lista_dfs.append(df)
             except Exception as e:
                 st.error(f"Error al procesar el archivo: {e}")
     else:
         foto = st.camera_input("Toma una captura limpia de la lista o ticket")
         if foto:
-            st.info("ℹ️ Captura almacenada correctamente. Para procesamiento estructurado automático se recomienda cargar el formato digital CSV/Excel.")
+            st.info("ℹ️ Captura almacenada correctamente.")
 
 else:
     archivos = st.file_uploader(
-        "Sube los archivos CSV o Excel a consolidar (ej. semanas o frentes de obra distintos):",
+        "Sube los archivos a consolidar:",
         type=["csv", "xlsx", "xls"],
         accept_multiple_files=True
     )
@@ -86,99 +76,101 @@ else:
 if lista_dfs:
     df_base = pd.concat(lista_dfs, ignore_index=True)
 
-    # Identificar columnas numéricas y de texto/categoría estrictamente
-    col_num = df_base.select_dtypes(include=[np.number]).columns.tolist()
-    col_cat = df_base.select_dtypes(include=['object', 'category']).columns.tolist()
+    for col in df_base.columns:
+        converted = pd.to_numeric(df_base[col], errors='ignore')
+        if converted.dtype != 'object':
+            df_base[col] = converted
 
-    # Identificar columnas con formato tipo Fecha
-    col_fechas = [c for c in df_base.columns if 'fecha' in c.lower() or 'date' in c.lower()]
+    col_num = df_base.select_dtypes(include=[np.number]).columns.tolist()
+    col_todas = df_base.columns.tolist()
 
     st.divider()
     
-    # Métricas Principales en tarjetas
+    # Resumen
     st.subheader("📊 Resumen Ejecutivo")
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        st.metric("Total de Registros", len(df_base))
-    with m2:
-        st.metric("Total de Columnas", len(df_base.columns))
-    with m3:
-        st.metric("Variables Numéricas", len(col_num))
-    with m4:
-        st.metric("Categorías Detectadas", len(col_cat))
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total de Registros", len(df_base))
+    m2.metric("Total de Columnas", len(df_base.columns))
+    m3.metric("Archivos Cargados", len(lista_dfs))
 
     # -------------------------------------------------------------------------
-    # FILTRADO INTELIGENTE
+    # FILTRADO DINÁMICO
     # -------------------------------------------------------------------------
     st.divider()
     st.subheader("🔍 Filtro de Control de Datos")
     df_filtrado = df_base.copy()
 
-    col_filtro = st.selectbox("Selecciona la categoría o fecha por la que deseas filtrar:", ["(Sin Filtro)"] + col_cat)
+    col_filtro = st.selectbox("Selecciona columna para filtrar:", ["(Sin Filtro)"] + col_todas)
     
     if col_filtro != "(Sin Filtro)":
         opciones_validas = sorted([str(x) for x in df_base[col_filtro].dropna().unique().tolist()])
-        seleccion = st.multiselect(f"Selecciona valores específicos de '{col_filtro}':", opciones_validas)
+        seleccion = st.multiselect(f"Filtrar por '{col_filtro}':", opciones_validas)
         if seleccion:
             df_filtrado = df_base[df_base[col_filtro].astype(str).isin(seleccion)]
 
-    # Vista previa de datos
+    # Vista previa
     st.subheader("📋 Tabla de Registros Procesados")
     st.dataframe(df_filtrado, use_container_width=True)
 
     # -------------------------------------------------------------------------
-    # DASHBOARD GRÁFICO (CON PASTEL CORRECTO Y FILTROS LÓGICOS)
+    # DASHBOARD GRÁFICO CON MATPLOTLIB (PARA STREAMLIT Y PDF)
     # -------------------------------------------------------------------------
     st.divider()
     st.subheader("📈 Dashboard Visual e Indicadores")
 
-    if len(col_num) > 0 and len(col_cat) > 0:
-        tab_bar, tab_pie, tab_line, tab_scat = st.tabs(["📊 Gráfico de Barras", "🍕 Gráfico de Pastel", "📈 Líneas / Tendencia", "📍 Dispersión"])
+    opciones_y = col_num if len(col_num) > 0 else col_todas
 
-        with tab_bar:
-            st.markdown("**Comparativa de Sumas por Categoría (Barras)**")
-            ej_x = st.selectbox("Categoría a comparar (Eje X):", col_cat, key="bar_x_clean")
-            ej_y = st.selectbox("Monto o Cantidad (Eje Y):", col_num, key="bar_y_clean")
-            if ej_x and ej_y:
-                df_bar = df_filtrado.groupby(ej_x)[ej_y].sum().reset_index()
-                st.bar_chart(df_bar.set_index(ej_x))
+    tab_bar, tab_pie, tab_line = st.tabs(["📊 Gráfico de Barras", "🍕 Gráfico de Pastel", "📈 Líneas / Tendencia"])
 
-        with tab_pie:
-            st.markdown("**Distribución Porcentual (Pastel)**")
-            pie_c = st.selectbox("Categoría para el Pastel:", col_cat, key="pie_c_clean")
-            pie_v = st.selectbox("Monto / Valor a representar:", col_num, key="pie_v_clean")
-            if pie_c and pie_v:
-                df_pie = df_filtrado.groupby(pie_c)[pie_v].sum().reset_index()
-                # Gráfico interactivo tipo pastel usando Vega-Lite (Altair nativo)
-                chart_pie = {
-                    "mark": {"type": "arc", "tooltip": True},
-                    "encoding": {
-                        "theta": {"field": pie_v, "type": "quantitative"},
-                        "color": {"field": pie_c, "type": "nominal"}
-                    },
-                    "data": {"values": df_pie.to_dict(orient="records")}
-                }
-                st.vega_lite_chart(chart_pie, use_container_width=True)
+    fig_bar, fig_pie, fig_line = None, None, None
 
-        with tab_line:
-            st.markdown("**Comportamiento o Tendencia**")
-            line_var = st.selectbox("Selecciona variable a evaluar en el tiempo:", col_num, key="line_clean")
-            if line_var:
-                st.line_chart(df_filtrado[line_var])
+    with tab_bar:
+        st.markdown("**Comparativa por Categoría (Barras)**")
+        ej_x = st.selectbox("Eje X (Categoría):", col_todas, index=0, key="bar_x_clean")
+        ej_y = st.selectbox("Eje Y (Suma):", opciones_y, index=0, key="bar_y_clean")
+        if ej_x and ej_y:
+            try:
+                df_bar = df_filtrado.groupby(ej_x)[ej_y].sum().reset_index().dropna()
+                fig_bar, ax_b = plt.subplots(figsize=(7, 3.5))
+                ax_b.bar(df_bar[ej_x].astype(str), df_bar[ej_y], color='#1f77b4')
+                ax_b.set_title(f"Suma de {ej_y} por {ej_x}")
+                plt.xticks(rotation=45, ha='right')
+                plt.tight_layout()
+                st.pyplot(fig_bar)
+            except Exception as e:
+                st.warning("Selecciona columnas válidas para el gráfico de barras.")
 
-        with tab_scat:
-            st.markdown("**Relación entre 2 Variables Numéricas**")
-            if len(col_num) >= 2:
-                scat_x = st.selectbox("Variable X:", col_num, index=0, key="scat_x_c")
-                scat_y = st.selectbox("Variable Y:", col_num, index=1 if len(col_num) > 1 else 0, key="scat_y_c")
-                st.scatter_chart(df_filtrado[[scat_x, scat_y]])
-            else:
-                st.info("Se necesitan al menos 2 columnas numéricas para este gráfico.")
-    else:
-        st.warning("Se requieren columnas de texto/categorías y valores numéricos para construir el panel gráfico.")
+    with tab_pie:
+        st.markdown("**Distribución Porcentual (Pastel)**")
+        pie_c = st.selectbox("Categoría:", col_todas, index=0, key="pie_c_clean")
+        pie_v = st.selectbox("Valor a representar:", opciones_y, index=0, key="pie_v_clean")
+        if pie_c and pie_v:
+            try:
+                df_pie = df_filtrado.groupby(pie_c)[pie_v].sum().reset_index().dropna()
+                fig_pie, ax_p = plt.subplots(figsize=(6, 3.5))
+                ax_p.pie(df_pie[pie_v], labels=df_pie[pie_c].astype(str), autopct='%1.1f%%', startangle=90)
+                ax_p.axis('equal')
+                ax_p.set_title(f"Distribución de {pie_v} por {pie_c}")
+                plt.tight_layout()
+                st.pyplot(fig_pie)
+            except Exception as e:
+                st.warning("Selecciona una columna numérica para el pastel.")
+
+    with tab_line:
+        st.markdown("**Comportamiento o Tendencia**")
+        line_var = st.selectbox("Variable para líneas:", opciones_y, key="line_clean")
+        if line_var:
+            try:
+                fig_line, ax_l = plt.subplots(figsize=(7, 3.5))
+                ax_l.plot(df_filtrado[line_var].values, marker='o', color='#2ca02c')
+                ax_l.set_title(f"Tendencia de {line_var}")
+                plt.tight_layout()
+                st.pyplot(fig_line)
+            except Exception:
+                st.warning("Selecciona una variable numérica.")
 
     # -------------------------------------------------------------------------
-    # EXPEDICIÓN Y RESGUARDO EN PDF Y FORMATOS DIGITALES
+    # GENERACIÓN DE REPORTES Y PDF MULTI-TABLA
     # -------------------------------------------------------------------------
     st.divider()
     st.subheader("📥 Generación de Reportes e Identificador de Control")
@@ -192,63 +184,79 @@ if lista_dfs:
 
     c_csv, c_excel, c_pdf = st.columns(3)
 
-    # Exportación CSV
+    # CSV
     csv_bytes = df_filtrado.to_csv(index=False).encode('utf-8')
     c_csv.download_button("📄 Exportar CSV", data=csv_bytes, file_name=f"{nombre_archivo_base}.csv", mime="text/csv", use_container_width=True)
 
-    # Exportación Excel
+    # Excel
     if EXCEL_AVAILABLE:
         buf_xl = io.BytesIO()
         with pd.ExcelWriter(buf_xl, engine='openpyxl') as w:
-            df_filtrado.to_excel(w, index=False, sheet_name='Reporte')
+            for origen, df_sub in df_filtrado.groupby('Archivo_Origen'):
+                sheet_name = str(origen)[:30].replace('/', '_').replace('\\', '_')
+                df_sub.dropna(how='all', axis=1).to_excel(w, index=False, sheet_name=sheet_name)
         c_excel.download_button("📊 Exportar Excel (.xlsx)", data=buf_xl.getvalue(), file_name=f"{nombre_archivo_base}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-    else:
-        c_excel.warning("Instalando 'openpyxl'...")
 
-    # Exportación PDF Ejecutiva
+    # PDF con Gráficos e Identificación Individual por Archivo
     if PDF_AVAILABLE:
         buf_pdf = io.BytesIO()
         doc = SimpleDocTemplate(buf_pdf, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
         story = []
         styles = getSampleStyleSheet()
 
-        # Encabezado del PDF
+        # Encabezado
         story.append(Paragraph(f"<b>REPORTE EJECUTIVO DE CONTROL DE OBRA</b>", styles['Title']))
         story.append(Paragraph(f"<b>ID Único:</b> {id_reporte} | <b>Fecha:</b> {fecha_actual}", styles['Normal']))
         story.append(Spacer(1, 15))
 
-        # Métricas principales en el PDF
-        story.append(Paragraph(f"<b>Resumen:</b> Total de registros: {len(df_filtrado)}", styles['Heading2']))
+        # Insertar Gráficos Activos
+        story.append(Paragraph("<b>GRÁFICOS E INDICADORES CLAVE</b>", styles['Heading2']))
+        story.append(Spacer(1, 5))
+
+        for fig_temp in [fig_bar, fig_pie, fig_line]:
+            if fig_temp is not None:
+                img_buf = io.BytesIO()
+                fig_temp.savefig(img_buf, format='png', dpi=150)
+                img_buf.seek(0)
+                story.append(RLImage(img_buf, width=450, height=225))
+                story.append(Spacer(1, 10))
+
+        story.append(PageBreak())
+
+        # Tablas Separadas por Archivo de Origen (Sin Columnas 'nan' vacías)
+        story.append(Paragraph("<b>DETALLE DE TABLAS POR ARCHIVO FUENTE</b>", styles['Heading1']))
         story.append(Spacer(1, 10))
 
-        # Tabla (primeras 20 filas para mantener claridad)
-        datos_tabla = [list(df_filtrado.columns)]
-        for _, fila in df_filtrado.head(20).iterrows():
-            datos_tabla.append([str(val) for val in fila.values])
+        for origen_nombre, df_grupo in df_filtrado.groupby('Archivo_Origen'):
+            # Eliminar columnas con todos los valores nulos para evitar celdas vacías desordenadas
+            df_limpio = df_grupo.dropna(how='all', axis=1)
 
-        t = Table(datos_tabla, repeatRows=1)
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f77b4')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ]))
-        story.append(t)
+            story.append(Paragraph(f"📄 <b>Fuente: {origen_nombre}</b> (Registros: {len(df_limpio)})", styles['Heading2']))
+            story.append(Spacer(1, 5))
+
+            datos_tabla = [list(df_limpio.columns)]
+            for _, fila in df_limpio.head(15).iterrows():
+                datos_tabla.append([str(val) if pd.notna(val) else "" for val in fila.values])
+
+            t = Table(datos_tabla, repeatRows=1)
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f77b4')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 7),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 4),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ]))
+            story.append(t)
+            story.append(Spacer(1, 15))
 
         doc.build(story)
 
         c_pdf.download_button(
-            "📕 Exportar Reporte Ejecutivo (PDF)",
+            "📕 Exportar Reporte Ejecutivo (PDF con Gráficos)",
             data=buf_pdf.getvalue(),
             file_name=f"{nombre_archivo_base}.pdf",
             mime="application/pdf",
             use_container_width=True
         )
-    else:
-        c_pdf.warning("Instalando 'reportlab' para PDF...")
-
-else:
-    st.info("👋 Sube uno o varios archivos CSV / Excel para desplegar el sistema de análisis y reportes.")

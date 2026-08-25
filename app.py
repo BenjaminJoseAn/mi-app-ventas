@@ -31,37 +31,53 @@ except ImportError:
 
 
 # -----------------------------------------------------------------------------
-# FUNCIÓN AUXILIAR PARA PARSEAR PDFs GENERADOS PREVIAMENTE
+# FUNCIÓN AUXILIAR PARA PARSEAR PDFs GENERADOS PREVIAMENTE (CORREGIDA)
 # -----------------------------------------------------------------------------
 def cargar_datos_desde_pdf(archivo_pdf):
     """
     Extrae la información tabular de los reportes PDF exportados previamente
-    y recupera el ID de Auditoría y Fecha para dar seguimiento continuo.
+    de forma dinámica sin fallar por diferencias en el número de columnas.
     """
-    registros = []
-    headers = []
-    
     reader = pypdf.PdfReader(archivo_pdf)
     texto_completo = ""
     
     for page in reader.pages:
-        texto_completo += page.extract_text() + "\n"
+        txt = page.extract_text()
+        if txt:
+            texto_completo += txt + "\n"
 
-    # Intentar extraer líneas de tabla simples
     lineas = [line.strip() for line in texto_completo.split('\n') if line.strip()]
     
-    # Procesar líneas que contengan estructura de tabla
-    # Supuesto: Las líneas consecutivas separadas por espacios/tabulaciones corresponden a datos
     filas_datos = []
+    max_cols = 0
+    
     for line in lineas:
-        parts = line.split()
-        if len(parts) >= 2:
-            filas_datos.append(parts)
+        # Omitir títulos/encabezados genéricos del reporte PDF para evitar ruido
+        if "REPORTE EJECUTIVO DE CONTROL DE OBRA" in line or "GRÁFICOS E INDICADORES" in line:
+            continue
             
-    if filas_datos:
-        # La primera fila encontrada suele ser el encabezado
-        headers = [f"Col_{i+1}" for i in range(len(filas_datos[0]))]
-        df_pdf = pd.DataFrame(filas_datos, columns=headers)
+        parts = line.split()
+        if len(parts) >= 1:
+            filas_datos.append(parts)
+            if len(parts) > max_cols:
+                max_cols = len(parts)
+            
+    if filas_datos and max_cols > 0:
+        # Rellenar filas cortas con cadenas vacías para normalizar dimensiones
+        filas_normalizadas = [
+            fila + [""] * (max_cols - len(fila)) for fila in filas_datos
+        ]
+        
+        # Asignar nombres genéricos a las columnas
+        headers = [f"Columna_{i+1}" for i in range(max_cols)]
+        df_pdf = pd.DataFrame(filas_normalizadas, columns=headers)
+        
+        # Usar la primera fila como encabezado si sus elementos no se repiten
+        if len(df_pdf) > 1:
+            posible_header = [str(x) for x in df_pdf.iloc[0].values]
+            if len(posible_header) == len(set(posible_header)):
+                df_pdf.columns = posible_header
+                df_pdf = df_pdf.iloc[1:].reset_index(drop=True)
     else:
         df_pdf = pd.DataFrame({'Contenido_PDF': [texto_completo]})
         
@@ -154,8 +170,8 @@ if lista_dfs:
 
     st.divider()
     
-    # Resumen
-    st.subheader("📊 Resumen Ejecutivo y Seguimiento Accumulado")
+    # Resumen Ejecutivo
+    st.subheader("📊 Resumen Ejecutivo y Seguimiento Acumulado")
     m1, m2, m3 = st.columns(3)
     m1.metric("Total de Registros", len(df_base))
     m2.metric("Total de Columnas", len(df_base.columns))
@@ -196,7 +212,7 @@ if lista_dfs:
             except Exception as e:
                 st.caption(f"No se pudo formatear la columna como fecha: {e}")
 
-    # Vista previa
+    # Tabla interactiva de datos
     st.subheader("📋 Tabla de Registros Consolidados")
     st.dataframe(df_filtrado, use_container_width=True)
 
@@ -225,7 +241,7 @@ if lista_dfs:
                 plt.xticks(rotation=45, ha='right')
                 plt.tight_layout()
                 st.pyplot(fig_bar)
-            except Exception as e:
+            except Exception:
                 st.warning("Selecciona columnas válidas para el gráfico de barras.")
 
     with tab_pie:
@@ -241,7 +257,7 @@ if lista_dfs:
                 ax_p.set_title(f"Distribución de {pie_v} por {pie_c}")
                 plt.tight_layout()
                 st.pyplot(fig_pie)
-            except Exception as e:
+            except Exception:
                 st.warning("Selecciona una columna numérica para el pastel.")
 
     with tab_line:
@@ -272,32 +288,32 @@ if lista_dfs:
 
     c_csv, c_excel, c_pdf = st.columns(3)
 
-    # CSV
+    # Exportación CSV
     csv_bytes = df_filtrado.to_csv(index=False).encode('utf-8')
     c_csv.download_button("📄 Exportar CSV", data=csv_bytes, file_name=f"{nombre_archivo_base}.csv", mime="text/csv", use_container_width=True)
 
-    # Excel
+    # Exportación Excel
     if EXCEL_AVAILABLE:
         buf_xl = io.BytesIO()
         with pd.ExcelWriter(buf_xl, engine='openpyxl') as w:
-            for origen, df_sub in df_filtrado.groupby('Archivo_Origen'):
-                sheet_name = str(origen)[:30].replace('/', '_').replace('\\', '_')
+            for origen_nombre, df_sub in df_filtrado.groupby('Archivo_Origen'):
+                sheet_name = str(origen_nombre)[:30].replace('/', '_').replace('\\', '_')
                 df_sub.dropna(how='all', axis=1).to_excel(w, index=False, sheet_name=sheet_name)
         c_excel.download_button("📊 Exportar Excel (.xlsx)", data=buf_xl.getvalue(), file_name=f"{nombre_archivo_base}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
-    # PDF Export
+    # Exportación PDF
     if PDF_AVAILABLE:
         buf_pdf = io.BytesIO()
         doc = SimpleDocTemplate(buf_pdf, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
         story = []
         styles = getSampleStyleSheet()
 
-        # Encabezado
+        # Encabezado principal
         story.append(Paragraph(f"<b>REPORTE EJECUTIVO DE CONTROL DE OBRA</b>", styles['Title']))
         story.append(Paragraph(f"<b>ID Único:</b> {id_reporte} | <b>Fecha:</b> {fecha_actual}", styles['Normal']))
         story.append(Spacer(1, 15))
 
-        # Insertar Gráficos Activos
+        # Insertar Gráficos Generados
         story.append(Paragraph("<b>GRÁFICOS E INDICADORES CLAVE</b>", styles['Heading2']))
         story.append(Spacer(1, 5))
 
@@ -311,7 +327,7 @@ if lista_dfs:
 
         story.append(PageBreak())
 
-        # Tablas Separadas por Archivo de Origen
+        # Tablas por Archivo Fuente
         story.append(Paragraph("<b>DETALLE DE TABLAS POR ARCHIVO / PDF FUENTE</b>", styles['Heading1']))
         story.append(Spacer(1, 10))
 

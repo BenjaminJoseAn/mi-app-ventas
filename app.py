@@ -76,11 +76,11 @@ else:
 if lista_dfs:
     df_base = pd.concat(lista_dfs, ignore_index=True)
 
-for col in df_base.columns:
-    converted = pd.to_numeric(df_base[col], errors='coerce')
-    # Si la columna se pudo convertir a números sin llenar toda la columna de NaN
-    if not converted.isna().all():
-        df_base[col] = converted
+    # Conversión numérica compatible con Pandas 2.0+
+    for col in df_base.columns:
+        converted = pd.to_numeric(df_base[col], errors='coerce')
+        if not converted.isna().all():
+            df_base[col] = converted
 
     col_num = df_base.select_dtypes(include=[np.number]).columns.tolist()
     col_todas = df_base.columns.tolist()
@@ -198,7 +198,7 @@ for col in df_base.columns:
                 df_sub.dropna(how='all', axis=1).to_excel(w, index=False, sheet_name=sheet_name)
         c_excel.download_button("📊 Exportar Excel (.xlsx)", data=buf_xl.getvalue(), file_name=f"{nombre_archivo_base}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
-    # PDF con Gráficos e Identificación Individual por Archivo
+    # PDF
     if PDF_AVAILABLE:
         buf_pdf = io.BytesIO()
         doc = SimpleDocTemplate(buf_pdf, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
@@ -224,12 +224,11 @@ for col in df_base.columns:
 
         story.append(PageBreak())
 
-        # Tablas Separadas por Archivo de Origen (Sin Columnas 'nan' vacías)
+        # Tablas Separadas por Archivo de Origen
         story.append(Paragraph("<b>DETALLE DE TABLAS POR ARCHIVO FUENTE</b>", styles['Heading1']))
         story.append(Spacer(1, 10))
 
         for origen_nombre, df_grupo in df_filtrado.groupby('Archivo_Origen'):
-            # Eliminar columnas con todos los valores nulos para evitar celdas vacías desordenadas
             df_limpio = df_grupo.dropna(how='all', axis=1)
 
             story.append(Paragraph(f"📄 <b>Fuente: {origen_nombre}</b> (Registros: {len(df_limpio)})", styles['Heading2']))

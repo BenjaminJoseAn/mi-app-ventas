@@ -76,10 +76,11 @@ else:
 if lista_dfs:
     df_base = pd.concat(lista_dfs, ignore_index=True)
 
-    for col in df_base.columns:
-        converted = pd.to_numeric(df_base[col], errors='ignore')
-        if converted.dtype != 'object':
-            df_base[col] = converted
+for col in df_base.columns:
+    converted = pd.to_numeric(df_base[col], errors='coerce')
+    # Si la columna se pudo convertir a números sin llenar toda la columna de NaN
+    if not converted.isna().all():
+        df_base[col] = converted
 
     col_num = df_base.select_dtypes(include=[np.number]).columns.tolist()
     col_todas = df_base.columns.tolist()
